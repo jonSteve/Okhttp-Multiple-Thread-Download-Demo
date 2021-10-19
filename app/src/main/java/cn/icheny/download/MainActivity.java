@@ -25,7 +25,8 @@ public class MainActivity extends AppCompatActivity {
     ProgressBar pb_progress1, pb_progress2;
 
     DownloadManager mDownloadManager;
-    String wechatUrl = "http://dldir1.qq.com/weixin/android/weixin703android1400.apk";
+    String wechatUrl = "http://admin-test.moyixing.com/files/216097500597967505594.zip";
+//    String wechatUrl = "http://dldir1.qq.com/weixin/android/weixin703android1400.apk";
     String qqUrl = "https://qd.myapp.com/myapp/qqteam/AndroidQQ/mobileqq_android.apk";
 
     @Override
@@ -164,6 +165,12 @@ public class MainActivity extends AppCompatActivity {
         switch (view.getId()) {
             case R.id.btn_cancel1:
                 mDownloadManager.cancel(wechatUrl);
+                if (!mDownloadManager.isDownloading(wechatUrl)) {
+                    tv_progress2.setText("0%");
+                    pb_progress2.setProgress(0);
+                    btn_download2.setText("下载");
+                    Toast.makeText(MainActivity.this, "下载已取消!", Toast.LENGTH_SHORT).show();
+                }
                 break;
             case R.id.btn_cancel2:
                 mDownloadManager.cancel(qqUrl);

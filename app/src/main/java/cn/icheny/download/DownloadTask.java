@@ -2,7 +2,8 @@ package cn.icheny.download;
 
 import android.os.Handler;
 import android.os.Message;
-import android.util.Log;
+
+import com.blankj.utilcode.util.LogUtils;
 
 import java.io.Closeable;
 import java.io.File;
@@ -97,13 +98,13 @@ public class DownloadTask extends Handler {
 
     public synchronized void start() {
         try {
-            Log.e(TAG, "start: " + isDownloading + "\t" + mPoint.getUrl());
+            LogUtils.e(TAG, "start: " + isDownloading + "\t" + mPoint.getUrl());
             if (isDownloading) return;
             isDownloading = true;
             mHttpUtil.getContentLength(mPoint.getUrl(), new okhttp3.Callback() {
                 @Override
-                public void onResponse(Call call, Response response) throws IOException {
-                    Log.e(TAG, "start: " + response.code() + "\t isDownloading:" + isDownloading + "\t" + mPoint.getUrl());
+                public void onResponse(Call call, Response response) {
+                    LogUtils.e(TAG, "start: " + response.code() + "\t isDownloading:" + isDownloading + "\t" + mPoint.getUrl());
                     if (response.code() != 200) {
                         close(response.body());
                         resetStutus();
@@ -115,8 +116,12 @@ public class DownloadTask extends Handler {
                     // 在本地创建一个与资源同样大小的文件来占位
                     mTmpFile = new File(mPoint.getFilePath(), mPoint.getFileName() + ".tmp");
                     if (!mTmpFile.getParentFile().exists()) mTmpFile.getParentFile().mkdirs();
-                    RandomAccessFile tmpAccessFile = new RandomAccessFile(mTmpFile, "rw");
-                    tmpAccessFile.setLength(mFileLength);
+                    try {
+                        RandomAccessFile tmpAccessFile = new RandomAccessFile(mTmpFile, "rw");
+                        tmpAccessFile.setLength(mFileLength);
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
                     /*将下载任务分配给每个线程*/
                     long blockSize = mFileLength / THREAD_COUNT;// 计算每个线程理论上下载的数量.
 
@@ -133,7 +138,7 @@ public class DownloadTask extends Handler {
 
                 @Override
                 public void onFailure(Call call, IOException e) {
-                    Log.e(TAG, "start:Exception " + e.getMessage() + "\n" + mPoint.getUrl());
+                    LogUtils.e(TAG, "start:Exception " + e.getMessage() + "\n" + mPoint.getUrl());
                     resetStutus();
                 }
             });
@@ -143,77 +148,102 @@ public class DownloadTask extends Handler {
         }
     }
 
-    private void download(final long startIndex, final long endIndex, final int threadId) throws IOException {
+    private void download(final long startIndex, final long endIndex, final int threadId) {
+        LogUtils.e("download>>>>", startIndex, endIndex, threadId);
         long newStartIndex = startIndex;
         // 分段请求网络连接,分段将文件保存到本地.
         // 加载下载位置缓存文件
         final File cacheFile = new File(mPoint.getFilePath(), "thread" + threadId + "_" + mPoint.getFileName() + ".cache");
         mCacheFiles[threadId] = cacheFile;
-        final RandomAccessFile cacheAccessFile = new RandomAccessFile(cacheFile, "rwd");
-        if (cacheFile.exists()) {// 如果文件存在
-            String startIndexStr = cacheAccessFile.readLine();
-            try {
-                newStartIndex = Integer.parseInt(startIndexStr);//重新设置下载起点
-            } catch (NumberFormatException e) {
-                e.printStackTrace();
-            }
-        }
-        final long finalStartIndex = newStartIndex;
-        mHttpUtil.downloadFileByRange(mPoint.getUrl(), finalStartIndex, endIndex, new okhttp3.Callback() {
-            @Override
-            public void onResponse(Call call, Response response) throws IOException {
-                Log.e(TAG, "download: " + response.code() + "\t isDownloading:" + isDownloading + "\t" + mPoint.getUrl());
-                if (response.code() != 206) {// 206：请求部分资源成功码
-                    resetStutus();
-                    return;
+        try {
+            final RandomAccessFile cacheAccessFile = new RandomAccessFile(cacheFile, "rwd");
+            if (cacheFile.exists()) {// 如果文件存在
+                String startIndexStr = cacheAccessFile.readLine();
+                try {
+                    if (startIndexStr != null) {
+                        newStartIndex = Integer.parseInt(startIndexStr);//重新设置下载起点
+                    }
+                } catch (NumberFormatException e) {
+                    e.printStackTrace();
                 }
-                InputStream is = response.body().byteStream();// 获取流
-                RandomAccessFile tmpAccessFile = new RandomAccessFile(mTmpFile, "rw");// 获取前面已创建的文件.
-                tmpAccessFile.seek(finalStartIndex);// 文件写入的开始位置.
-                /*  将网络流中的文件写入本地*/
-                byte[] buffer = new byte[1024 << 2];
-                int length = -1;
-                int total = 0;// 记录本次下载文件的大小
-                long progress = 0;
-                while ((length = is.read(buffer)) > 0) {
-                    if (cancel) {
+            }
+            final long finalStartIndex = newStartIndex;
+            mHttpUtil.downloadFileByRange(mPoint.getUrl(), finalStartIndex, endIndex, new okhttp3.Callback() {
+                @Override
+                public void onResponse(Call call, Response response) {
+                    LogUtils.e("onResponse", response.code(), isDownloading, mPoint.getUrl(), finalStartIndex);
+                    if (response.code() != 206) {// 206：请求部分资源成功码
+                        resetStutus();
+                        return;
+                    }
+                    InputStream is = null;// 获取流
+                    boolean isSuccess = false;
+                    /*  将网络流中的文件写入本地*/
+                    byte[] buffer = new byte[1024 << 2];
+                    int length = -1;
+                    int total = 0;// 记录本次下载文件的大小
+                    long progress = 0;
+                    try {
+                        is = response.body().byteStream();
+                        RandomAccessFile tmpAccessFile = new RandomAccessFile(mTmpFile, "rw");// 获取前面已创建的文件.
+                        tmpAccessFile.seek(finalStartIndex);// 文件写入的开始位置.
+                        while ((length = is.read(buffer)) > 0) {
+                            if (cancel) {
+                                //关闭资源
+                                close(cacheAccessFile, is, response.body());
+                                cleanFile(cacheFile);
+                                sendEmptyMessage(MSG_CANCEL);
+                                LogUtils.e("cancel>>>>>>>>>>>>>>>>>>>");
+                                return;
+                            }
+                            if (pause) {
+                                //关闭资源
+                                close(cacheAccessFile, is, response.body());
+                                //发送暂停消息
+                                sendEmptyMessage(MSG_PAUSE);
+
+                                LogUtils.e("pause>>>>>>>>>>>>>>>>>>>");
+                                return;
+                            }
+                            tmpAccessFile.write(buffer, 0, length);
+                            total += length;
+                            progress = finalStartIndex + total;
+
+                            //将当前现在到的位置保存到文件中
+                            cacheAccessFile.seek(0);
+                            cacheAccessFile.write((progress + "").getBytes("UTF-8"));
+                            //发送进度消息
+                            mProgress[threadId] = progress - startIndex;
+                            sendEmptyMessage(MSG_PROGRESS);
+                        }
+                        isSuccess = true;
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    } finally {
                         //关闭资源
                         close(cacheAccessFile, is, response.body());
+                    }
+                    if (isSuccess) {
+                        //发送完成消息
+                        sendEmptyMessage(MSG_FINISH);
+                        // 删除临时文件
                         cleanFile(cacheFile);
-                        sendEmptyMessage(MSG_CANCEL);
-                        return;
+                    } else {
+                        download(startIndex, endIndex, threadId);
                     }
-                    if (pause) {
-                        //关闭资源
-                        close(cacheAccessFile, is, response.body());
-                        //发送暂停消息
-                        sendEmptyMessage(MSG_PAUSE);
-                        return;
-                    }
-                    tmpAccessFile.write(buffer, 0, length);
-                    total += length;
-                    progress = finalStartIndex + total;
 
-                    //将当前现在到的位置保存到文件中
-                    cacheAccessFile.seek(0);
-                    cacheAccessFile.write((progress + "").getBytes("UTF-8"));
-                    //发送进度消息
-                    mProgress[threadId] = progress - startIndex;
-                    sendEmptyMessage(MSG_PROGRESS);
+                    LogUtils.e("end>>>>>>>>>>>>>>>>>>>");
                 }
-                //关闭资源
-                close(cacheAccessFile, is, response.body());
-                // 删除临时文件
-                cleanFile(cacheFile);
-                //发送完成消息
-                sendEmptyMessage(MSG_FINISH);
-            }
 
-            @Override
-            public void onFailure(Call call, IOException e) {
-                isDownloading = false;
-            }
-        });
+                @Override
+                public void onFailure(Call call, IOException e) {
+                    isDownloading = false;
+                }
+            });
+        } catch (IOException e) {
+            e.printStackTrace();
+            download(startIndex, endIndex, threadId);
+        }
     }
 
     /**
